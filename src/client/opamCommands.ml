@@ -3424,7 +3424,11 @@ let lint cli =
         `P (Printf.sprintf "%s$(b,%d): %s"
               (match t with | `Warning -> "W"  | `Error -> "$(i,E)")
               c s))
-      (OpamFileTools.all_lint_warnings ())
+      ([ 69, `Error, "Package dependencies are not satisfied" ] @ OpamFileTools.all_lint_warnings ())
+  in
+  let check_deps =
+    mk_flag ~cli (cli_from cli2_1)
+      ["deps"] "Check status of dependencies"
   in
   let files =
     Arg.(value & pos_all (existing_filename_dirname_or_dash) [] &
@@ -3461,7 +3465,7 @@ let lint cli =
       "Check upstream, archive availability and checksum(s)"
   in
   let lint global_options files package normalise short warnings_sel
-      check_upstream recurse subpath () =
+      check_upstream recurse subpath check_deps () =
     apply_global_options cli global_options;
     let opam_files_in_dir d =
       match OpamPinned.files_in_source ~recurse ?subpath d with
@@ -3521,6 +3525,16 @@ let lint cli =
               | None ->
                 OpamFileTools.lint_channel ~check_upstream ~handle_dirname:false
                   (OpamFile.make (OpamFilename.of_string "-")) stdin
+            in
+            let warnings =
+              match opam, check_deps with
+              | None, _ | _, false -> warnings
+              | Some opam, true ->
+                let formula = OpamFilter.filter_deps ~build:true ~post:true opam.depends in
+                OpamGlobalState.with_ `Lock_none @@ fun gt ->
+                OpamSwitchState.with_ `Lock_read gt @@ fun st ->
+                if OpamFormula.satisfies_depends st.installed formula then []
+                else ( 69, `Error, "Package dependencies are not installed" ) :: warnings
             in
             let enabled =
               let default = match warnings_sel with
@@ -3582,7 +3596,7 @@ let lint cli =
   in
   mk_command  ~cli cli_original "lint" ~doc ~man
     Term.(const lint $global_options cli $files $package $normalise $short
-          $warnings $check_upstream $recurse cli $subpath cli)
+          $warnings $check_upstream $recurse cli $subpath cli $check_deps)
 
 (* CLEAN *)
 let clean_doc = "Cleans up opam caches"
