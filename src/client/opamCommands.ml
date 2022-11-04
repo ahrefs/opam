@@ -3597,10 +3597,17 @@ let lint cli =
     mk_flag ~cli cli_original ["check-upstream"]
       "Check upstream, archive availability and checksum(s)"
   in
+  let local_repo =
+    mk_opt ~cli (cli_from ~experimental:true cli2_2)
+      [ "local-repo"] "DIR"
+      "When checking dependencies, override installed packages with matching \
+       opam files found in $(i,DIR) (recursively)."
+      Arg.(some dirname) None
+  in
   let lint global_options files package normalise short warnings_sel
-      check_upstream recurse subpath check_deps () =
+      check_upstream recurse subpath check_deps local_repo () =
     apply_global_options cli global_options;
-    let opam_files_in_dir d =
+    let opam_files_in_dir ?(recurse = recurse) d =
       match OpamPinned.files_in_source ~recurse ?subpath d with
       | [] ->
         OpamConsole.warning "No opam files found in %s"
@@ -3609,11 +3616,9 @@ let lint cli =
       | l ->
         List.map (fun nf -> `file nf.pin.pin_file) l
     in
-    let files, local_repos_files = match files, package with
+    let files = match files, package with
       | [], None -> (* Lookup in cwd if nothing was specified *)
-        (opam_files_in_dir (OpamFilename.cwd ()), [])
-      | [ Some OpamFilename.F f; Some OpamFilename.D d], None ->
-        ([`file (OpamFile.make f)], opam_files_in_dir d)
+        opam_files_in_dir (OpamFilename.cwd ())
       | files, None ->
         let files =
           List.map (function
@@ -3624,7 +3629,7 @@ let lint cli =
                 [`file (OpamFile.make f)])
             files
           |> List.flatten
-        in (files, [])
+        in files
       | [], Some pkg ->
         (OpamGlobalState.with_ `Lock_none @@ fun gt ->
          OpamSwitchState.with_ `Lock_none gt @@ fun st ->
@@ -3654,7 +3659,7 @@ let lint cli =
                          (OpamRepositoryName.to_string repo)
                          (OpamPackage.to_string nv))
              in
-             ([`pkg (OpamFilename.read (OpamFile.filename f), filename)], [])
+             [`pkg (OpamFilename.read (OpamFile.filename f), filename)]
          with Not_found ->
            OpamConsole.error_and_exit `Not_found "No opam file found for %s%s"
              (OpamPackage.Name.to_string (fst pkg))
@@ -3663,6 +3668,11 @@ let lint cli =
       | _::_, Some _ ->
         OpamConsole.error_and_exit `Bad_arguments
           "--package and a file argument are incompatible"
+    in
+    let local_repos_files =
+      match local_repo with
+      | None -> []
+      | Some dir -> opam_files_in_dir ~recurse:true dir
     in
     let msg = if normalise then OpamConsole.errmsg else OpamConsole.msg in
     let json =
@@ -3825,7 +3835,7 @@ let lint cli =
   in
   mk_command  ~cli cli_original "lint" ~doc ~man
     Term.(const lint $global_options cli $files $package $normalise $short
-          $warnings $check_upstream $recurse cli $subpath cli $check_deps)
+          $warnings $check_upstream $recurse cli $subpath cli $check_deps $local_repo)
 
 (* CLEAN *)
 let clean_doc = "Cleans up opam caches"
