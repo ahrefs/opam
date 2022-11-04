@@ -3476,18 +3476,22 @@ let lint cli =
       | l ->
         List.map (fun (_name,f,_) -> Some f) l
     in
-    let files = match files, package with
+    let files, local_repos_files = match files, package with
       | [], None -> (* Lookup in cwd if nothing was specified *)
-        opam_files_in_dir (OpamFilename.cwd ())
+        (opam_files_in_dir (OpamFilename.cwd ()), [])
+      | [ Some OpamFilename.F f; Some OpamFilename.D d], None ->
+        ([Some (OpamFile.make f)], opam_files_in_dir d)
       | files, None ->
-        List.map (function
-            | None -> [None] (* this means '-' was specified for stdin *)
-            | Some (OpamFilename.D d) ->
-              opam_files_in_dir d
-            | Some (OpamFilename.F f) ->
-              [Some (OpamFile.make f)])
-          files
-        |> List.flatten
+        let files =
+          List.map (function
+              | None -> [None] (* this means '-' was specified for stdin *)
+              | Some (OpamFilename.D d) ->
+                opam_files_in_dir d
+              | Some (OpamFilename.F f) ->
+                [Some (OpamFile.make f)])
+            files
+          |> List.flatten
+        in (files, [])
       | [], Some pkg ->
         (OpamGlobalState.with_ `Lock_none @@ fun gt ->
          OpamSwitchState.with_ `Lock_none gt @@ fun st ->
@@ -3499,7 +3503,7 @@ let lint cli =
            let opam = OpamSwitchState.opam st nv in
            match OpamPinned.orig_opam_file st (OpamPackage.name nv) opam with
            | None -> raise Not_found
-           | some -> [some]
+           | some -> ([some], [])
          with Not_found ->
            OpamConsole.error_and_exit `Not_found "No opam file found for %s%s"
              (OpamPackage.Name.to_string (fst pkg))
@@ -3532,6 +3536,28 @@ let lint cli =
               | Some opam, true ->
                 OpamGlobalState.with_ `Lock_none @@ fun gt ->
                 OpamSwitchState.with_ `Lock_read gt @@ fun st ->
+                let module OpamOverrideMap =
+                  Map.Make(struct
+                    open OpamTypes
+                    type t = name * version
+                    let compare (n1, v1) (n2, v2) =
+                      match OpamPackage.Name.compare n1 n2 with
+                      | 0 -> OpamPackage.Version.compare v1 v2
+                      | n -> n
+                  end)
+                in
+                let opam_overrides =
+                  List.fold_left
+                    (fun overrides file ->
+                       match file with
+                       | Some file -> begin
+                         match OpamFile.OPAM.read_opt file with
+                           | Some ({ name = Some name; version = Some version; _ } as opam) ->
+                             OpamOverrideMap.add (name, version) opam overrides | _ -> overrides
+                       end
+                       | _ -> overrides)
+                    OpamOverrideMap.empty local_repos_files
+                in
                 let rec dependency_errors ?(seen=OpamPackage.Name.Set.empty) ?(warnings = []) (opam : OpamFile.OPAM.t) =
                   match
                     Option.map_default
@@ -3554,10 +3580,12 @@ let lint cli =
                     OpamPackage.Set.fold
                       (fun package (seen, warnings) ->
                          let seen, warnings =
-                           match OpamSwitchState.opam_opt st package with
-                           | None -> (seen, warnings)
-                           | Some opam ->
-                             dependency_errors ~seen ~warnings opam
+                           let opam_override =
+                             OpamOverrideMap.find_opt OpamPackage.(name package, version package) opam_overrides
+                           in
+                           match OpamSwitchState.opam_opt st package, opam_override with
+                           | None, None -> (seen, warnings)
+                           | _, Some opam | Some opam, None -> dependency_errors ~seen ~warnings opam
                          in
                          (OpamPackage.Name.Set.add (OpamPackage.name package) seen, warnings))
                       deps (seen, warnings)
@@ -3566,12 +3594,13 @@ let lint cli =
                     match OpamFormula.satisfies_depends st.installed formula with
                     | false ->
                       let msg =
-                        Printf.sprintf "Package dependencies not satisfied%s"
+                        Printf.sprintf "Package dependencies not satisfied%sformula: %s"
                           (Option.map_default
                              (fun name ->
-                                Printf.sprintf " package: %s"
+                                Printf.sprintf " package: %s "
                                   (OpamPackage.Name.to_string name))
                              "" opam.name)
+                          (OpamFormula.to_string formula)
                       in
                       ( 69, `Error, msg) :: warnings
                     | true -> warnings
