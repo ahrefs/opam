@@ -3691,11 +3691,55 @@ let lint cli =
               match opam, check_deps with
               | None, _ | _, false -> warnings
               | Some opam, true ->
-                let formula = OpamFilter.filter_deps ~build:true ~post:true opam.depends in
                 OpamGlobalState.with_ `Lock_none @@ fun gt ->
                 OpamSwitchState.with_ `Lock_read gt @@ fun st ->
-                if OpamFormula.satisfies_depends st.installed formula then []
-                else ( 69, `Error, "Package dependencies are not installed" ) :: warnings
+                let rec dependency_errors ?(seen=OpamPackage.Name.Set.empty) ?(warnings = []) (opam : OpamFile.OPAM.t) =
+                  match
+                    Option.map_default
+                       (fun name -> OpamPackage.Name.Set.mem name seen)
+                       false opam.name
+                  with
+                  | true -> (seen, warnings)
+                  | false ->
+                  let formula =
+                    OpamFilter.filter_deps
+                      ~build:true ~post:true ~test:false ~doc:false ~tools:false ~dev:false opam.depends
+                  in
+                  let deps = OpamFormula.packages st.installed formula in
+                  let seen =
+                    match opam.name with
+                    | None -> seen
+                    | Some name -> OpamPackage.Name.Set.add name seen
+                  in
+                  let seen, warnings =
+                    OpamPackage.Set.fold
+                      (fun package (seen, warnings) ->
+                         let seen, warnings =
+                           match OpamSwitchState.opam_opt st package with
+                           | None -> (seen, warnings)
+                           | Some opam ->
+                             dependency_errors ~seen ~warnings opam
+                         in
+                         (OpamPackage.Name.Set.add (OpamPackage.name package) seen, warnings))
+                      deps (seen, warnings)
+                  in
+                  let warnings =
+                    match OpamFormula.satisfies_depends st.installed formula with
+                    | false ->
+                      let msg =
+                        Printf.sprintf "Package dependencies not satisfied%s"
+                          (Option.map_default
+                             (fun name ->
+                                Printf.sprintf " package: %s"
+                                  (OpamPackage.Name.to_string name))
+                             "" opam.name)
+                      in
+                      ( 69, `Error, msg) :: warnings
+                    | true -> warnings
+                  in
+                  (seen, warnings)
+                in
+                List.concat [ snd @@ dependency_errors opam; warnings ]
             in
             let enabled =
               let default = match warnings_sel with
