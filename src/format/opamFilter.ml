@@ -586,7 +586,7 @@ let deps_var_env ~build ~post ?test ?doc ?dev var =
   | "post" -> Some (B post)
   | "with-test" -> get_opt test
   | "with-doc" -> get_opt doc
-  | "dev" -> get_opt dev
+  | "dev" | "with-dev-setup" -> get_opt dev
   | _ -> None
 
 let filter_deps ~build ~post ?test ?doc ?dev ?default_version ?default deps =
