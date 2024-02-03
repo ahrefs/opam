@@ -3576,9 +3576,17 @@ let lint cli =
                   with
                   | true -> (seen, warnings)
                   | false ->
+                  let env =
+                    List.fold_left
+                      (fun m (variable, v) ->
+                         match Lazy.force v with
+                         | None -> m
+                         | Some v -> OpamVariable.Full.Map.add (OpamVariable.Full.global variable) v m)
+                      OpamVariable.Full.Map.empty OpamSysPoll.variables
+                  in
                   let formula =
-                    OpamFilter.filter_deps
-                      ~build:true ~post:true ~test:false ~doc:false ~dev:false opam.depends
+                    OpamFilter.filter_deps ~build:true ~post:true ~test:false ~doc:false ~dev:false @@
+                    OpamFilter.partial_filter_formula (fun v -> OpamVariable.Full.Map.find_opt v env) opam.depends
                   in
                   let deps = OpamFormula.packages st.installed formula in
                   let seen =
